@@ -26,6 +26,9 @@
 #include <QCloseEvent>
 #include <QEnterEvent>
 #include <QApplication>
+#include <QPointer>
+
+#include <Windows.h>
 
 #include <Config.h>
 #include "../Helper.h"
@@ -208,8 +211,42 @@ void MainWindow::StartUpdateChecks()
     _updateChecker.Start();
 }
 
+namespace {
+// The popup doesn't always get focus when it's opened from the tray (e.g. third-party shells
+// don't hand the foreground over), so losing focus can't be relied on to notice a click
+// elsewhere. A low-level mouse hook sees every click while the popup is open.
+HHOOK g_outsideClickHook = nullptr;
+HWND g_outsideClickWindow = nullptr;
+QPointer<MainWindow> g_outsideClickOwner;
+
+LRESULT CALLBACK OutsideClickHookProc(int code, WPARAM wParam, LPARAM lParam)
+{
+    if (code == HC_ACTION &&
+        (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN || wParam == WM_MBUTTONDOWN))
+    {
+        const auto *info = reinterpret_cast<const MSLLHOOKSTRUCT *>(lParam);
+        RECT rect;
+        if (g_outsideClickOwner && GetWindowRect(g_outsideClickWindow, &rect) &&
+            !PtInRect(&rect, info->pt))
+        {
+            // Hooks must return quickly; hide later from the event loop.
+            QMetaObject::invokeMethod(
+                g_outsideClickOwner.data(),
+                [owner = g_outsideClickOwner] {
+                    if (owner) {
+                        owner->HideOnOutsideClick();
+                    }
+                },
+                Qt::QueuedConnection);
+        }
+    }
+    return CallNextHookEx(nullptr, code, wParam, lParam);
+}
+} // namespace
+
 MainWindow::~MainWindow()
 {
+    SetCloseOnOutsideClick(false);
     // Stop the decoder before QObject destroys the video surface child.
     delete _playback;
     _deviceQueryThread.request_stop();
@@ -596,7 +633,7 @@ void MainWindow::DoHide()
         return;
     }
     _isVisible = false;
-    _activatedSinceShow = false;
+    SetCloseOnOutsideClick(false);
 
     ControlAutoHideTimer(false);
 
@@ -617,13 +654,13 @@ void MainWindow::showEvent(QShowEvent *event)
 
 void MainWindow::Show()
 {
-    // Clicking the tray icon or the taskbar status while the popup is open takes focus away from
-    // it first, which hides it, and then asks to show it again. Treat that as a toggle instead of
-    // sliding the popup out and back in. The tray waits for the double-click interval before
-    // asking, hence the margin.
-    if (_hiddenOnDeactivateAt.has_value()) {
-        const auto elapsed = std::chrono::steady_clock::now() - *_hiddenOnDeactivateAt;
-        _hiddenOnDeactivateAt.reset();
+    // Clicking the tray icon or the taskbar status while the popup is open is a click outside it,
+    // which hides it, and then asks to show it again. Treat that as a toggle instead of sliding
+    // the popup out and back in. The tray waits for the double-click interval before asking,
+    // hence the margin.
+    if (_hiddenOnOutsideClickAt.has_value()) {
+        const auto elapsed = std::chrono::steady_clock::now() - *_hiddenOnOutsideClickAt;
+        _hiddenOnOutsideClickAt.reset();
         if (elapsed < std::chrono::milliseconds{QApplication::doubleClickInterval() + 300}) {
             return;
         }
@@ -676,7 +713,9 @@ void MainWindow::BeginShow(bool fromHidden)
         return;
     }
     _isVisible = true;
-    _activatedSinceShow = isActiveWindow();
+    if (!testAttribute(Qt::WA_ShowWithoutActivating) || isActiveWindow()) {
+        SetCloseOnOutsideClick(true);
+    }
     PlayAnimation();
     ControlAutoHideTimer(true);
 
@@ -696,6 +735,7 @@ void MainWindow::BeginShow(bool fromHidden)
 void MainWindow::hideEvent(QHideEvent *event)
 {
     _isVisible = false;
+    SetCloseOnOutsideClick(false);
     _posAnimation.stop();
     ControlAutoHideTimer(false);
     StopAnimation();
@@ -723,14 +763,40 @@ void MainWindow::changeEvent(QEvent *event)
     }
 
     if (isActiveWindow()) {
-        _activatedSinceShow = true;
+        SetCloseOnOutsideClick(true);
+    }
+    else {
+        HideOnOutsideClick();
+    }
+}
+
+void MainWindow::HideOnOutsideClick()
+{
+    if (!_isVisible || !_closeOnOutsideClick) {
         return;
     }
+    LOG(Trace, "MainWindow: Hide on outside click");
+    _hiddenOnOutsideClickAt = std::chrono::steady_clock::now();
+    DoHide();
+}
 
-    if (_activatedSinceShow) {
-        LOG(Trace, "MainWindow: Hide on deactivation");
-        _hiddenOnDeactivateAt = std::chrono::steady_clock::now();
-        DoHide();
+void MainWindow::SetCloseOnOutsideClick(bool enable)
+{
+    _closeOnOutsideClick = enable;
+
+    if (enable && g_outsideClickHook == nullptr) {
+        g_outsideClickOwner = this;
+        g_outsideClickWindow = reinterpret_cast<HWND>(winId());
+        g_outsideClickHook =
+            SetWindowsHookExW(WH_MOUSE_LL, OutsideClickHookProc, GetModuleHandleW(nullptr), 0);
+        if (g_outsideClickHook == nullptr) {
+            LOG(Warn, "SetWindowsHookExW failed. Error: {}", GetLastError());
+        }
+    }
+    else if (!enable && g_outsideClickHook != nullptr) {
+        UnhookWindowsHookEx(g_outsideClickHook);
+        g_outsideClickHook = nullptr;
+        g_outsideClickOwner = nullptr;
     }
 }
 } // namespace Gui
