@@ -713,9 +713,9 @@ void MainWindow::BeginShow(bool fromHidden)
         return;
     }
     _isVisible = true;
-    if (!testAttribute(Qt::WA_ShowWithoutActivating) || isActiveWindow()) {
-        SetCloseOnOutsideClick(true);
-    }
+    // Any click outside hides it, including the popup that opened by itself when the lid opened:
+    // that one doesn't take focus, but the first click elsewhere, even in a game, dismisses it.
+    SetCloseOnOutsideClick(true);
     PlayAnimation();
     ControlAutoHideTimer(true);
 
@@ -762,10 +762,7 @@ void MainWindow::changeEvent(QEvent *event)
         return;
     }
 
-    if (isActiveWindow()) {
-        SetCloseOnOutsideClick(true);
-    }
-    else {
+    if (!isActiveWindow()) {
         HideOnOutsideClick();
     }
 }

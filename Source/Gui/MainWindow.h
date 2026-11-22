@@ -103,9 +103,7 @@ private:
     ButtonAction _buttonAction{ButtonAction::NoButton};
     MainWindowViewModel _viewModel;
     bool _isVisible{false};
-    // Whether a click outside the popup hides it (#126). Set when the user opens the popup or
-    // clicks into it, so the popup that opens by itself when the lid opens doesn't vanish on the
-    // first click in a game.
+    // Whether a click outside the popup hides it (#126). Set while the popup is shown.
     bool _closeOnOutsideClick{false};
     std::optional<std::chrono::steady_clock::time_point> _hiddenOnOutsideClickAt;
 
