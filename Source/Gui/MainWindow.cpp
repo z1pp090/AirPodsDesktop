@@ -25,6 +25,7 @@
 #include <QMessageBox>
 #include <QCloseEvent>
 #include <QEnterEvent>
+#include <QApplication>
 
 #include <Config.h>
 #include "../Helper.h"
@@ -595,6 +596,7 @@ void MainWindow::DoHide()
         return;
     }
     _isVisible = false;
+    _activatedSinceShow = false;
 
     ControlAutoHideTimer(false);
 
@@ -615,6 +617,18 @@ void MainWindow::showEvent(QShowEvent *event)
 
 void MainWindow::Show()
 {
+    // Clicking the tray icon or the taskbar status while the popup is open takes focus away from
+    // it first, which hides it, and then asks to show it again. Treat that as a toggle instead of
+    // sliding the popup out and back in. The tray waits for the double-click interval before
+    // asking, hence the margin.
+    if (_hiddenOnDeactivateAt.has_value()) {
+        const auto elapsed = std::chrono::steady_clock::now() - *_hiddenOnDeactivateAt;
+        _hiddenOnDeactivateAt.reset();
+        if (elapsed < std::chrono::milliseconds{QApplication::doubleClickInterval() + 300}) {
+            return;
+        }
+    }
+
     if (isVisible()) {
         BeginShow(false);
     }
@@ -662,6 +676,7 @@ void MainWindow::BeginShow(bool fromHidden)
         return;
     }
     _isVisible = true;
+    _activatedSinceShow = isActiveWindow();
     PlayAnimation();
     ControlAutoHideTimer(true);
 
@@ -691,6 +706,32 @@ void MainWindow::closeEvent(QCloseEvent *event)
 {
     event->ignore();
     DoHide();
+}
+
+// Also hides the popup when the user clicks somewhere else, like other Windows flyouts (#126).
+//
+void MainWindow::changeEvent(QEvent *event)
+{
+    if (event->type() == QEvent::LanguageChange) {
+        _ui.retranslateUi(this);
+        Repaint();
+    }
+    QDialog::changeEvent(event);
+
+    if (event->type() != QEvent::ActivationChange || !_isVisible) {
+        return;
+    }
+
+    if (isActiveWindow()) {
+        _activatedSinceShow = true;
+        return;
+    }
+
+    if (_activatedSinceShow) {
+        LOG(Trace, "MainWindow: Hide on deactivation");
+        _hiddenOnDeactivateAt = std::chrono::steady_clock::now();
+        DoHide();
+    }
 }
 } // namespace Gui
 
