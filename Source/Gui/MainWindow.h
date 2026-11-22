@@ -19,6 +19,8 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
+#include <optional>
 #include <thread>
 
 #include <QDialog>
@@ -99,6 +101,10 @@ private:
     ButtonAction _buttonAction{ButtonAction::NoButton};
     MainWindowViewModel _viewModel;
     bool _isVisible{false};
+    // Set once the popup gets focus after being shown. Only then does losing focus hide it, so a
+    // popup opened without focus (lid opened) keeps showing until it auto-hides (#126).
+    bool _activatedSinceShow{false};
+    std::optional<std::chrono::steady_clock::time_point> _hiddenOnDeactivateAt;
     std::atomic<bool> _deviceQueryRunning{false};
     std::jthread _deviceQueryThread;
 
@@ -125,11 +131,8 @@ private:
     void showEvent(QShowEvent *event) override;
     void hideEvent(QHideEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
+    void changeEvent(QEvent *event) override;
 
     UTILS_QT_DISABLE_ESC_QUIT(QDialog);
-    UTILS_QT_REGISTER_LANGUAGECHANGE(QDialog, [this] {
-        _ui.retranslateUi(this);
-        Repaint();
-    });
 };
 } // namespace Gui
