@@ -152,6 +152,12 @@ inline bool SingleInstance(const QString &instanceName)
     uint32_t lastError = GetLastError();
 
     if (mutex == nullptr) {
+        // Another instance running at a different integrity level (e.g. started elevated by the
+        // installer) owns the mutex, so this process isn't allowed to open it. That still means
+        // an instance is already running.
+        if (lastError == ERROR_ACCESS_DENIED) {
+            return false;
+        }
         FatalError(std::format("Create instance mutex failed.\nErrorCode: {}", lastError), false);
     }
 
